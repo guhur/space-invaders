@@ -39,9 +39,13 @@ async function gallery(env: Env): Promise<Response> {
   if (!env.FLASH_UID) {
     return json({ error: "FLASH_UID manquant : lance `wrangler secret put FLASH_UID`." }, { status: 500 });
   }
-  const res = await fetch(`${GALLERY_URL}?uid=${encodeURIComponent(env.FLASH_UID)}`, {
-    cf: { cacheTtl: 0, cacheEverything: false },
-  });
+  const url = `${GALLERY_URL}?uid=${encodeURIComponent(env.FLASH_UID)}`;
+  let res = await fetch(url, { cf: { cacheTtl: 0, cacheEverything: false } });
+  // L'API répond parfois 52x depuis le réseau Cloudflare : une seconde tentative suffit en général.
+  if (res.status >= 500) {
+    await new Promise((r) => setTimeout(r, 800));
+    res = await fetch(url, { cf: { cacheTtl: 0, cacheEverything: false } });
+  }
   if (!res.ok) {
     return json({ error: `L'API FlashInvaders a répondu ${res.status}.` }, { status: 502 });
   }
