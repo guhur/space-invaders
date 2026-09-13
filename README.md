@@ -18,6 +18,10 @@ pnpm build && pnpm dev:api               # http://localhost:8787
 
 ## Déploiement
 
+Chaque push sur `main` est typé, compilé puis déployé par GitHub Actions (`.github/workflows/ci.yml`) ; les pull requests sont seulement compilées. Secrets du dépôt : `CLOUDFLARE_API_TOKEN` (modèle « Edit Cloudflare Workers ») et `CLOUDFLARE_ACCOUNT_ID`.
+
+À la main :
+
 ```sh
 npx wrangler login
 npx wrangler secret put FLASH_UID
