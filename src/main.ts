@@ -1,5 +1,6 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { readCache, writeCache } from "./cache";
 import "./style.css";
 
 type Flash = { id: string; points: number; cityId: number; flashedAt: string; image: string };
@@ -14,6 +15,8 @@ type Position = [id: string, status: Status, lat: number, lng: number];
 
 const TZ = "Europe/Paris";
 const STALE_MS = 2 * 60 * 1000;
+/** Les positions bougent peu : même fraîcheur côté navigateur que le cache du Worker. */
+const POSITIONS_STALE_MS = 6 * 60 * 60 * 1000;
 const PARIS: L.LatLngTuple = [48.8606, 2.3522];
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -62,6 +65,14 @@ let positions = new Map<string, { status: Status; latlng: L.LatLngTuple }>();
 let selectedDay = parisDate(new Date());
 let lastFetch = 0;
 const markers = new Map<string, L.CircleMarker>();
+
+const setPositions = (raw: Position[]) => {
+  positions = new Map(raw.map(([id, status, lat, lng]) => [normId(id), { status, latlng: [lat, lng] }]));
+};
+
+const showPlayer = (p: Gallery["player"]) => {
+  $("player").textContent = `${p.name} · ${fmt(p.found)} invaders · ${fmt(p.score)} pts · #${fmt(p.rank)}`;
+};
 
 /* ---------------- carte */
 
@@ -217,8 +228,8 @@ async function refresh({ fit = false } = {}) {
   try {
     gallery = await getJson<Gallery>("/api/gallery");
     lastFetch = Date.now();
-    const p = gallery.player;
-    $("player").textContent = `${p.name} · ${fmt(p.found)} invaders · ${fmt(p.score)} pts · #${fmt(p.rank)}`;
+    writeCache("gallery", gallery);
+    showPlayer(gallery.player);
     const fresh = before.size ? gallery.flashes.filter((f) => !before.has(f.id)).length : 0;
     render();
     if (fit) fitDay();
@@ -227,7 +238,8 @@ async function refresh({ fit = false } = {}) {
         (fresh ? ` · ${fresh} nouveau${fresh > 1 ? "x" : ""}` : ""),
     );
   } catch (e) {
-    setStatus(`${(e as Error).message} Réessaie dans un instant.`, true);
+    const fallback = gallery ? ` Affichage du dernier scan (${parisTime(new Date(gallery.fetchedAt))}).` : " Réessaie dans un instant.";
+    setStatus(`${(e as Error).message}${fallback}`, true);
   } finally {
     btn.disabled = false;
     btn.classList.remove("spinning");
@@ -276,13 +288,43 @@ map.on("locationerror", () => setStatus("Localisation refusée ou indisponible. 
 
 /* ---------------- démarrage */
 
-(async () => {
-  renderDay();
+/** Renvoie vrai quand les positions ont pu être rechargées depuis le réseau. */
+async function loadPositions(): Promise<boolean> {
   try {
     const raw = await getJson<Position[]>("/api/positions");
-    positions = new Map(raw.map(([id, status, lat, lng]) => [normId(id), { status, latlng: [lat, lng] }]));
+    setPositions(raw);
+    writeCache("positions", raw);
+    return true;
   } catch (e) {
-    setStatus(`Carte des positions indisponible : ${(e as Error).message}`, true);
+    // Une révalidation en fond qui échoue est muette : les positions en cache restent affichées.
+    if (!positions.size) setStatus(`Carte des positions indisponible : ${(e as Error).message}`, true);
+    return false;
   }
-  await refresh({ fit: true });
+}
+
+(async () => {
+  const cachedPositions = readCache<Position[]>("positions");
+  const cachedGallery = readCache<Gallery>("gallery");
+  if (cachedPositions) setPositions(cachedPositions.data);
+  if (cachedGallery) {
+    gallery = cachedGallery.data;
+    lastFetch = cachedGallery.savedAt;
+    showPlayer(gallery.player);
+  }
+  render();
+  if (cachedGallery) {
+    fitDay();
+    setStatus(`Dernier scan à ${parisTime(new Date(cachedGallery.data.fetchedAt))}`);
+  }
+
+  // Sans positions en cache il n'y a rien à dessiner : on attend le réseau, sinon on révalide en fond.
+  if (!cachedPositions) {
+    if (await loadPositions()) render();
+  } else if (Date.now() - cachedPositions.savedAt > POSITIONS_STALE_MS) {
+    void loadPositions().then((ok) => ok && render());
+  }
+
+  if (!cachedGallery || Date.now() - cachedGallery.savedAt > STALE_MS) {
+    await refresh({ fit: !cachedGallery });
+  }
 })();

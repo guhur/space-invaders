@@ -6,6 +6,7 @@ Carte perso des space invaders : ce que j'ai flashé aujourd'hui (ou un autre jo
 - **API** : un Worker Cloudflare (`worker/index.ts`) qui sert les fichiers statiques et deux routes :
   - `GET /api/gallery` interroge l'API FlashInvaders avec l'UID du compte, gardé en secret côté Worker. L'UID et l'email ne sont jamais envoyés au navigateur.
   - `GET /api/positions` renvoie les positions (volontairement approximatives) et statuts des invaders depuis [pnote.eu](https://pnote.eu/projects/invaders/), mis en cache 6 h.
+- **Cache local** : les deux réponses sont gardées dans le `localStorage` (`src/cache.ts`), donc un refresh de la page redessine la carte tout de suite, sans attendre le réseau. La galerie est révalidée en fond au-delà de 2 min, les positions au-delà de 6 h (la fraîcheur du Worker), et le bouton « Rafraîchir » force toujours un appel. Si l'API est en panne, la dernière photo connue reste affichée.
 
 ## Développement
 
