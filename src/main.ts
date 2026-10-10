@@ -1,6 +1,7 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { readCache, writeCache } from "./cache";
+import { haversine, nearest, shortestPath, type Point } from "./route";
 import "./style.css";
 
 type Flash = { id: string; points: number; cityId: number; flashedAt: string; image: string };
@@ -18,6 +19,11 @@ const STALE_MS = 2 * 60 * 1000;
 /** Les positions bougent peu : même fraîcheur côté navigateur que le cache du Worker. */
 const POSITIONS_STALE_MS = 6 * 60 * 60 * 1000;
 const PARIS: L.LatLngTuple = [48.8606, 2.3522];
+/** Les distances sont à vol d'oiseau : les rues rallongent la marche d'environ un tiers. */
+const DETOUR = 1.3;
+const WALK_M_PER_MIN = 4500 / 60;
+/** Google Maps n'accepte que 9 étapes intermédiaires dans une URL. */
+const GMAPS_MAX_WAYPOINTS = 9;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (n: number) => n.toLocaleString("fr-FR");
@@ -146,7 +152,142 @@ function render() {
     markers.set(id, m);
   }
   renderDay();
+  if (route) drawRoute();
 }
+
+/* ---------------- parcours */
+
+let route: { start: Point; count: number; loop: boolean } | null = null;
+const routeLayer = L.layerGroup().addTo(map);
+
+const isTodo = (id: string, status: Status, flashed: Set<string>) =>
+  !flashed.has(id) && (status === "OK" || status === "damaged");
+
+const km = (m: number) => (m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} km`);
+
+function gmapsUrl(start: Point, stops: Point[], loop: boolean): string | null {
+  const dest = loop ? start : stops.at(-1)!;
+  const waypoints = loop ? stops : stops.slice(0, -1);
+  if (waypoints.length > GMAPS_MAX_WAYPOINTS) return null;
+  const ll = (p: Point) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
+  const q = new URLSearchParams({ api: "1", origin: ll(start), destination: ll(dest), travelmode: "walking" });
+  if (waypoints.length) q.set("waypoints", waypoints.map(ll).join("|"));
+  return `https://www.google.com/maps/dir/?${q}`;
+}
+
+function drawRoute() {
+  routeLayer.clearLayers();
+  if (!route) return;
+  const flashed = new Set((gallery?.flashes ?? []).map((f) => normId(f.id)));
+  const todo = [...positions]
+    .filter(([id, p]) => isTodo(id, p.status, flashed))
+    .map(([id, p]) => ({ id, lat: p.latlng[0], lng: p.latlng[1] }));
+  const picked = nearest(route.start, todo, route.count);
+
+  if (!picked.length) {
+    $("route-result").hidden = true;
+    setStatus("Plus aucun invader à flasher dans le coin.", true);
+    return;
+  }
+
+  const { order, length } = shortestPath([route.start, ...picked], route.loop);
+  const stops = order.slice(1).map((i) => picked[i - 1]);
+  const line: L.LatLngTuple[] = [route.start, ...stops].map((p) => [p.lat, p.lng]);
+  if (route.loop) line.push([route.start.lat, route.start.lng]);
+
+  L.polyline(line, { color: css("--route"), weight: 4, opacity: 0.9, dashArray: "1 8", lineCap: "round" }).addTo(routeLayer);
+  L.circleMarker([route.start.lat, route.start.lng], { radius: 6, color: css("--ink"), weight: 2, fillColor: css("--surface"), fillOpacity: 1 })
+    .bindTooltip("Départ")
+    .addTo(routeLayer);
+  stops.forEach((p, i) =>
+    L.marker([p.lat, p.lng], {
+      icon: L.divIcon({ className: "route-pin", html: String(i + 1), iconSize: [22, 22] }),
+      keyboard: false,
+    })
+      .on("click", () => markers.get(p.id)?.openPopup())
+      .addTo(routeLayer),
+  );
+
+  const walk = Math.round((length * DETOUR) / WALK_M_PER_MIN);
+  $("route-summary").textContent =
+    `${stops.length} invader${stops.length > 1 ? "s" : ""} · ${km(length)} à vol d'oiseau · ≈ ${duration(walk)} à pied` +
+    (stops.length < route.count ? ` (seulement ${stops.length} à flasher dans le coin)` : "");
+
+  const list = $("route-stops");
+  list.replaceChildren(
+    ...stops.map((p, i) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      const leg = haversine(i === 0 ? route!.start : stops[i - 1], p);
+      btn.innerHTML = `<span class="n">${i + 1}</span><span class="t">${km(leg)}</span><span class="id">${p.id}</span>`;
+      btn.addEventListener("click", () => {
+        map.setView([p.lat, p.lng], Math.max(map.getZoom(), 17));
+        markers.get(p.id)?.openPopup();
+        if (window.matchMedia("(max-width: 760px)").matches) setCollapsed(true);
+      });
+      li.append(btn);
+      return li;
+    }),
+  );
+
+  const url = gmapsUrl(route.start, stops, route.loop);
+  const link = $<HTMLAnchorElement>("route-gmaps");
+  link.hidden = !url;
+  if (url) link.href = url;
+  $("route-result").hidden = false;
+}
+
+/** Départ : la position GPS si on l'a, sinon on la demande, sinon le centre de la carte. */
+function routeStart(): Promise<{ point: Point; label: string }> {
+  if (me) return Promise.resolve({ point: me.getLatLng(), label: "depuis ta position" });
+  const center = () => ({ point: map.getCenter(), label: "depuis le centre de la carte" });
+  if (!navigator.geolocation) return Promise.resolve(center());
+  return new Promise((resolve) =>
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        showMe(L.latLng(pos.coords.latitude, pos.coords.longitude));
+        resolve({ point: me!.getLatLng(), label: "depuis ta position" });
+      },
+      () => resolve(center()),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+    ),
+  );
+}
+
+$("route-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $<HTMLInputElement>("route-count");
+  const count = Math.round(Number(input.value));
+  if (!input.checkValidity() || !count) {
+    input.reportValidity();
+    return;
+  }
+  if (!positions.size) {
+    setStatus("Les positions des invaders ne sont pas encore chargées.", true);
+    return;
+  }
+  const btn = $<HTMLButtonElement>("route-go");
+  btn.disabled = true;
+  setStatus("Recherche du point de départ…");
+  try {
+    const { point, label } = await routeStart();
+    route = { start: { lat: point.lat, lng: point.lng }, count, loop: $<HTMLInputElement>("route-loop").checked };
+    drawRoute();
+    const line = routeLayer.getLayers().find((l): l is L.Polyline => l instanceof L.Polyline);
+    if (line) map.fitBounds(line.getBounds(), { padding: [48, 48], maxZoom: 17 });
+    if (!$("route-result").hidden) setStatus(`Parcours calculé ${label}.`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("route-clear").addEventListener("click", () => {
+  route = null;
+  routeLayer.clearLayers();
+  $("route-result").hidden = true;
+  setStatus("");
+});
 
 /* ---------------- panneau */
 
@@ -279,9 +420,12 @@ $("locate").addEventListener("click", () => {
   setStatus("Localisation…");
   map.locate({ setView: true, maxZoom: 17, enableHighAccuracy: true });
 });
-map.on("locationfound", (e) => {
+function showMe(latlng: L.LatLng) {
   me?.remove();
-  me = L.circleMarker(e.latlng, { radius: 7, color: "#fff", weight: 3, fillColor: "#1a73e8", fillOpacity: 1 }).addTo(map);
+  me = L.circleMarker(latlng, { radius: 7, color: "#fff", weight: 3, fillColor: "#1a73e8", fillOpacity: 1 }).addTo(map);
+}
+map.on("locationfound", (e) => {
+  showMe(e.latlng);
   setStatus(`Position trouvée (± ${Math.round(e.accuracy)} m)`);
 });
 map.on("locationerror", () => setStatus("Localisation refusée ou indisponible. Autorise-la dans les réglages du navigateur.", true));
