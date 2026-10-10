@@ -51,3 +51,7 @@ export function writeCache<T>(name: string, data: T): void {
     }
   }
 }
+
+export function clearCache(name: string): void {
+  drop([keyOf(name)]);
+}
