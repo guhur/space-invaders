@@ -49,7 +49,8 @@ button { cursor: pointer; }
 .tag { font: 400 11px/1 var(--pixel); letter-spacing: 0.06em; color: var(--ink-3); }
 
 .app { display: grid; grid-template-columns: 360px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
-.map-shell { position: relative; min-height: 0; }
+/* Contexte d'empilement propre : les contrôles Leaflet (z-index 1000) restent sous le panneau. */
+.map-shell { position: relative; min-height: 0; z-index: 0; }
 #map { position: absolute; inset: 0; background: var(--ground); }
 /* Tuiles OSM assombries en mode sombre, les marqueurs restent intacts. */
 @media (prefers-color-scheme: dark) {
@@ -220,7 +221,9 @@ button { cursor: pointer; }
     box-shadow: 0 -6px 24px rgb(0 0 0 / 0.18);
     padding-bottom: env(safe-area-inset-bottom);
   }
-  .grab { display: grid; place-items: center; height: 22px; border: 0; background: transparent; padding: 0; }
+  .grab { display: grid; place-items: center; width: 100%; height: 30px; border: 0; background: transparent; padding: 0; touch-action: none; }
+  .head { touch-action: none; }
+  .panel.collapsed .head { cursor: pointer; }
   .grab-bar { width: 40px; height: 4px; border-radius: 2px; background: var(--line); }
   .head { padding: 2px 16px 10px; }
   .panel-body { padding: 0 16px 16px; }
