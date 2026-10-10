@@ -262,7 +262,13 @@ button { cursor: pointer; }
 .route-result { display: grid; gap: 8px; }
 .route-result[hidden] { display: none; }
 .route-summary { margin: 0; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.route-stops button { grid-template-columns: 26px 56px 1fr; }
+.route-stops button { grid-template-columns: 26px 64px 1fr; }
+.route-stops button.done .t { color: var(--route); font-weight: 700; }
+.route-stops button.done .id { text-decoration: line-through; color: var(--ink-3); }
+.route-progress { width: 100%; height: 8px; appearance: none; border: 0; border-radius: 999px; background: var(--line); overflow: hidden; accent-color: var(--route); }
+.route-progress::-webkit-progress-bar { background: var(--line); }
+.route-progress::-webkit-progress-value { background: var(--route); }
+.route-progress::-moz-progress-bar { background: var(--route); }
 .route-actions { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .route-actions a { color: var(--route); font-weight: 700; }
 .route-actions a[hidden] { display: none; }
@@ -278,3 +284,4 @@ button { cursor: pointer; }
   font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.3);
 }
+.route-pin.done { background: var(--gone); color: var(--ink-3); }

@@ -1,6 +1,6 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { readCache, writeCache } from "./cache";
+import { clearCache, readCache, writeCache } from "./cache";
 import { haversine, nearest, shortestPath, type Point } from "./route";
 import "./style.css";
 
@@ -157,7 +157,11 @@ function render() {
 
 /* ---------------- parcours */
 
-let route: { start: Point; count: number; loop: boolean } | null = null;
+type Stop = Point & { id: string };
+/** Les étapes sont figées au tracé : flasher un invader le coche au lieu de le remplacer par le suivant. */
+type SavedRoute = { start: Point; loop: boolean; stops: Stop[] };
+
+let route: SavedRoute | null = null;
 const routeLayer = L.layerGroup().addTo(map);
 
 const isTodo = (id: string, status: Status, flashed: Set<string>) =>
@@ -175,43 +179,62 @@ function gmapsUrl(start: Point, stops: Point[], loop: boolean): string | null {
   return `https://www.google.com/maps/dir/?${q}`;
 }
 
-function drawRoute() {
-  routeLayer.clearLayers();
-  if (!route) return;
+function pathMeters(points: Point[], loop: boolean): number {
+  let s = 0;
+  for (let i = 1; i < points.length; i++) s += haversine(points[i - 1], points[i]);
+  return loop && points.length > 1 ? s + haversine(points.at(-1)!, points[0]) : s;
+}
+
+function planRoute(start: Point, count: number, loop: boolean): SavedRoute | null {
   const flashed = new Set((gallery?.flashes ?? []).map((f) => normId(f.id)));
   const todo = [...positions]
     .filter(([id, p]) => isTodo(id, p.status, flashed))
     .map(([id, p]) => ({ id, lat: p.latlng[0], lng: p.latlng[1] }));
-  const picked = nearest(route.start, todo, route.count);
+  const picked = nearest(start, todo, count);
+  if (!picked.length) return null;
+  const { order } = shortestPath([start, ...picked], loop);
+  return { start, loop, stops: order.slice(1).map((i) => picked[i - 1]) };
+}
 
-  if (!picked.length) {
-    $("route-result").hidden = true;
-    setStatus("Plus aucun invader à flasher dans le coin.", true);
-    return;
+function drawRoute() {
+  routeLayer.clearLayers();
+  if (!route) return;
+  const { start, loop, stops } = route;
+  const flashedAt = new Map((gallery?.flashes ?? []).map((f) => [normId(f.id), f.flashedAt]));
+  const done = stops.filter((p) => flashedAt.has(p.id));
+  const left = stops.filter((p) => !flashedAt.has(p.id));
+  // On reprend là où on s'est arrêté : au dernier invader du parcours flashé, sinon au départ.
+  const last = done.reduce<Stop | null>((a, p) => (!a || flashedAt.get(p.id)! > flashedAt.get(a.id)! ? p : a), null);
+  const from = last ?? start;
+
+  const full: L.LatLngTuple[] = [start, ...stops].map((p) => [p.lat, p.lng]);
+  if (loop) full.push([start.lat, start.lng]);
+  L.polyline(full, { color: css("--route"), weight: 3, opacity: 0.3, dashArray: "1 8", lineCap: "round" }).addTo(routeLayer);
+  if (left.length) {
+    const rest: L.LatLngTuple[] = [from, ...left].map((p) => [p.lat, p.lng]);
+    if (loop) rest.push([start.lat, start.lng]);
+    L.polyline(rest, { color: css("--route"), weight: 4, opacity: 0.9, dashArray: "1 8", lineCap: "round" }).addTo(routeLayer);
   }
-
-  const { order, length } = shortestPath([route.start, ...picked], route.loop);
-  const stops = order.slice(1).map((i) => picked[i - 1]);
-  const line: L.LatLngTuple[] = [route.start, ...stops].map((p) => [p.lat, p.lng]);
-  if (route.loop) line.push([route.start.lat, route.start.lng]);
-
-  L.polyline(line, { color: css("--route"), weight: 4, opacity: 0.9, dashArray: "1 8", lineCap: "round" }).addTo(routeLayer);
-  L.circleMarker([route.start.lat, route.start.lng], { radius: 6, color: css("--ink"), weight: 2, fillColor: css("--surface"), fillOpacity: 1 })
+  L.circleMarker([start.lat, start.lng], { radius: 6, color: css("--ink"), weight: 2, fillColor: css("--surface"), fillOpacity: 1 })
     .bindTooltip("Départ")
     .addTo(routeLayer);
   stops.forEach((p, i) =>
     L.marker([p.lat, p.lng], {
-      icon: L.divIcon({ className: "route-pin", html: String(i + 1), iconSize: [22, 22] }),
+      icon: L.divIcon({ className: `route-pin${flashedAt.has(p.id) ? " done" : ""}`, html: String(i + 1), iconSize: [22, 22] }),
       keyboard: false,
     })
       .on("click", () => markers.get(p.id)?.openPopup())
       .addTo(routeLayer),
   );
 
-  const walk = Math.round((length * DETOUR) / WALK_M_PER_MIN);
-  $("route-summary").textContent =
-    `${stops.length} invader${stops.length > 1 ? "s" : ""} · ${km(length)} à vol d'oiseau · ≈ ${duration(walk)} à pied` +
-    (stops.length < route.count ? ` (seulement ${stops.length} à flasher dans le coin)` : "");
+  const total = pathMeters([start, ...stops], loop);
+  const remaining = left.length ? pathMeters([from, ...left, ...(loop ? [start] : [])], false) : 0;
+  const walk = Math.round((remaining * DETOUR) / WALK_M_PER_MIN);
+  $("route-summary").textContent = !left.length
+    ? `Parcours terminé : ${stops.length} / ${stops.length} flashés · ${km(total)} à vol d'oiseau`
+    : `${done.length} / ${stops.length} flashés · reste ${km(remaining)} à vol d'oiseau, ≈ ${duration(walk)} à pied`;
+  $<HTMLProgressElement>("route-progress").value = done.length;
+  $<HTMLProgressElement>("route-progress").max = stops.length;
 
   const list = $("route-stops");
   list.replaceChildren(
@@ -219,8 +242,10 @@ function drawRoute() {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      const leg = haversine(i === 0 ? route!.start : stops[i - 1], p);
-      btn.innerHTML = `<span class="n">${i + 1}</span><span class="t">${km(leg)}</span><span class="id">${p.id}</span>`;
+      const at = flashedAt.get(p.id);
+      if (at) btn.classList.add("done");
+      const info = at ? `✓ ${at.slice(11, 16)}` : km(haversine(i === 0 ? start : stops[i - 1], p));
+      btn.innerHTML = `<span class="n">${i + 1}</span><span class="t">${info}</span><span class="id">${p.id}</span>`;
       btn.addEventListener("click", () => {
         map.setView([p.lat, p.lng], Math.max(map.getZoom(), 17));
         markers.get(p.id)?.openPopup();
@@ -231,11 +256,19 @@ function drawRoute() {
     }),
   );
 
-  const url = gmapsUrl(route.start, stops, route.loop);
+  const url = left.length ? gmapsUrl(from, left, loop) : null;
   const link = $<HTMLAnchorElement>("route-gmaps");
   link.hidden = !url;
   if (url) link.href = url;
   $("route-result").hidden = false;
+}
+
+function setRoute(next: SavedRoute | null) {
+  route = next;
+  if (next) writeCache("route", next);
+  else clearCache("route");
+  drawRoute();
+  $("route-result").hidden = !next;
 }
 
 /** Départ : la position GPS si on l'a, sinon on la demande, sinon le centre de la carte. */
@@ -272,20 +305,31 @@ $("route-form").addEventListener("submit", async (e) => {
   setStatus("Recherche du point de départ…");
   try {
     const { point, label } = await routeStart();
-    route = { start: { lat: point.lat, lng: point.lng }, count, loop: $<HTMLInputElement>("route-loop").checked };
-    drawRoute();
-    const line = routeLayer.getLayers().find((l): l is L.Polyline => l instanceof L.Polyline);
-    if (line) map.fitBounds(line.getBounds(), { padding: [48, 48], maxZoom: 17 });
-    if (!$("route-result").hidden) setStatus(`Parcours calculé ${label}.`);
+    const planned = planRoute({ lat: point.lat, lng: point.lng }, count, $<HTMLInputElement>("route-loop").checked);
+    if (!planned) {
+      setStatus("Plus aucun invader à flasher dans le coin.", true);
+      return;
+    }
+    if (route && !confirm("Remplacer le parcours en cours ? Sa progression sera perdue.")) return;
+    setRoute(planned);
+    fitRoute();
+    setStatus(
+      `Parcours calculé ${label}` +
+        (planned.stops.length < count ? ` : seulement ${planned.stops.length} à flasher dans le coin.` : "."),
+    );
   } finally {
     btn.disabled = false;
   }
 });
 
+function fitRoute() {
+  if (!route) return;
+  map.fitBounds(L.latLngBounds([route.start, ...route.stops].map((p) => [p.lat, p.lng])), { padding: [48, 48], maxZoom: 17 });
+}
+
 $("route-clear").addEventListener("click", () => {
-  route = null;
-  routeLayer.clearLayers();
-  $("route-result").hidden = true;
+  if (!confirm("Effacer le parcours et sa progression ?")) return;
+  setRoute(null);
   setStatus("");
 });
 
@@ -472,6 +516,12 @@ async function loadPositions(): Promise<boolean> {
 (async () => {
   const cachedPositions = readCache<Position[]>("positions");
   const cachedGallery = readCache<Gallery>("gallery");
+  const cachedRoute = readCache<SavedRoute>("route");
+  if (cachedRoute?.data.stops?.length) {
+    route = cachedRoute.data;
+    $<HTMLInputElement>("route-count").value = String(route.stops.length);
+    $<HTMLInputElement>("route-loop").checked = route.loop;
+  }
   if (cachedPositions) setPositions(cachedPositions.data);
   if (cachedGallery) {
     gallery = cachedGallery.data;
@@ -479,8 +529,9 @@ async function loadPositions(): Promise<boolean> {
     showPlayer(gallery.player);
   }
   render();
+  if (route) fitRoute();
+  else if (cachedGallery) fitDay();
   if (cachedGallery) {
-    fitDay();
     setStatus(`Dernier scan à ${parisTime(new Date(cachedGallery.data.fetchedAt))}`);
   }
 
@@ -492,6 +543,6 @@ async function loadPositions(): Promise<boolean> {
   }
 
   if (!cachedGallery || Date.now() - cachedGallery.savedAt > STALE_MS) {
-    await refresh({ fit: !cachedGallery });
+    await refresh({ fit: !cachedGallery && !route });
   }
 })();
