@@ -50,6 +50,24 @@
 
           <ol class="flashes" id="flashes"></ol>
 
+          <section class="route" aria-labelledby="route-title">
+            <h2 class="tag" id="route-title">PARCOURS</h2>
+            <form class="route-form" id="route-form">
+              <label for="route-count">Invaders à flasher</label>
+              <input type="number" id="route-count" min="1" max="40" step="1" value="10" inputmode="numeric" />
+              <label class="route-loop"><input type="checkbox" id="route-loop" />Revenir au départ</label>
+              <button type="submit" class="route-go" id="route-go">Tracer le plus court chemin</button>
+            </form>
+            <div class="route-result" id="route-result" hidden>
+              <p class="route-summary" id="route-summary"></p>
+              <ol class="flashes route-stops" id="route-stops"></ol>
+              <div class="route-actions">
+                <a id="route-gmaps" target="_blank" rel="noopener">Ouvrir dans Google Maps</a>
+                <button type="button" id="route-clear">Effacer</button>
+              </div>
+            </div>
+          </section>
+
           <fieldset class="filters">
             <legend class="tag">SUR LA CARTE</legend>
             <label><input type="checkbox" id="f-day" checked /><i class="sw sw-day"></i>Flashés ce jour</label>
