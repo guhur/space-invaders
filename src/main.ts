@@ -413,7 +413,30 @@ const setCollapsed = (collapsed: boolean) => {
   $("grab").setAttribute("aria-expanded", String(!collapsed));
   setTimeout(() => map.invalidateSize(), 220);
 };
-$("grab").addEventListener("click", () => setCollapsed(!panel.classList.contains("collapsed")));
+/** Le clic qui suit un glissé ne doit pas annuler ce que le glissé vient de faire. */
+let swiped = false;
+$("grab").addEventListener("click", () => {
+  if (!swiped) setCollapsed(!panel.classList.contains("collapsed"));
+});
+// Replié, il ne reste que la poignée et l'en-tête : tout l'en-tête rouvre, pas seulement la poignée de 4 px.
+$("head").addEventListener("click", (e) => {
+  if (!swiped && panel.classList.contains("collapsed") && !(e.target as Element).closest("button")) setCollapsed(false);
+});
+let swipeStart: number | null = null;
+for (const el of [$("grab"), $("head")]) {
+  el.addEventListener("pointerdown", (e) => {
+    swiped = false;
+    swipeStart = e.clientY;
+  });
+  el.addEventListener("pointerup", (e) => {
+    if (swipeStart === null) return;
+    const dy = e.clientY - swipeStart;
+    swipeStart = null;
+    if (Math.abs(dy) < 24 || !window.matchMedia("(max-width: 760px)").matches) return;
+    swiped = true;
+    setCollapsed(dy > 0);
+  });
+}
 
 let me: L.CircleMarker | null = null;
 $("locate").addEventListener("click", () => {
