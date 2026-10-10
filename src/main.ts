@@ -455,6 +455,7 @@ const panel = $("panel");
 const setCollapsed = (collapsed: boolean) => {
   panel.classList.toggle("collapsed", collapsed);
   $("grab").setAttribute("aria-expanded", String(!collapsed));
+  $("open-panel").hidden = !collapsed;
   setTimeout(() => map.invalidateSize(), 220);
 };
 /** Le clic qui suit un glissé ne doit pas annuler ce que le glissé vient de faire. */
@@ -462,10 +463,12 @@ let swiped = false;
 $("grab").addEventListener("click", () => {
   if (!swiped) setCollapsed(!panel.classList.contains("collapsed"));
 });
-// Replié, il ne reste que la poignée et l'en-tête : tout l'en-tête rouvre, pas seulement la poignée de 4 px.
-$("head").addEventListener("click", (e) => {
-  if (!swiped && panel.classList.contains("collapsed") && !(e.target as Element).closest("button")) setCollapsed(false);
+// Replié, tout ce qui dépasse du panneau le rouvre, pas seulement la poignée.
+panel.addEventListener("click", (e) => {
+  if (!swiped && panel.classList.contains("collapsed") && !(e.target as Element).closest("button, a, input")) setCollapsed(false);
 });
+// Le bas de l'écran est sous la barre d'onglets de Safari sur iPhone : on garde une porte d'entrée en haut.
+$("open-panel").addEventListener("click", () => setCollapsed(false));
 let swipeStart: number | null = null;
 for (const el of [$("grab"), $("head")]) {
   el.addEventListener("pointerdown", (e) => {
